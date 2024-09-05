@@ -1,0 +1,8 @@
+{
+	"cmake.debugConfig": {
+		"args": [
+			"--config=/home/yunus/Projects/yoink/config-example.yaml",
+			"--foreground"
+		]
+	}
+}

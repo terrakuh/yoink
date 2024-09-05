@@ -1,0 +1,4 @@
+Diagnostics:
+	MissingIncludes: No
+InlayHints:
+	BlockEnd: Yes
