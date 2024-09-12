@@ -1,34 +1,18 @@
 # yaml-language-server: $schema=./schema.json
 
-ban:
-  time: 1d
-  search:
-    time: 6h
-    strikes: 3
-  actions: # Actions will be executed depending on what variables were matched by the monitors.
-    nft:
-      add: # Yoink to infinity and beyond.
-        type: process
-        program: nft
-        args: add element ip filter blackhole ${ip}
-      remove: # This will be called when the client is forgiven.
-        type: process
-        program: nft
-        args: remove element ip filter blackhole ${ip}
-# Useable placeholders patterns as match patterns and program args. Undefined variables in patterns or args will be ignored.
-variables:
-  ip: (\b25[0-5]|\b2[0-4][0-9]|\b[01]?[0-9][0-9]?)(\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}
+ban_settings:
+  ban_time: 1d
+  search_window: 6h
+  strikes: 1
+  nft_set: yoinkd
 monitors:
   nginx:
-    inputs: # The log sources.
-      - type: process
-        program: journalctl
-        args: --follow --output=cat CONTAINER_NAME=nginx # My container setups logs to journald
-      - type: process
-        program: cat
+    inputs:
+      - program: journalctl
+        args: --follow --output=short-iso CONTAINER_NAME=nginx # My container setups logs to journald
+      - program: cat
         args: static-nginx.log # Just look at this file once.
-      - type: process
-        program: tail
+      - program: tail
         args: --follow dynamic-nginx.log # Follow this file for dynamic changes.
     patterns:
-      - ${ip} \S+ \S+ \[[^\]]*\] "[^"]*" 400
+      - '${ISO}.+?\]: ${IP4} \S+ \S+ \[[^\]]*\] "[^"]*" 400'

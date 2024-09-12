@@ -10,11 +10,13 @@ using namespace yoink;
 
 namespace {
 
-awaitable<void> do_monitor(const Monitor& monitor, const Process& process)
-{
-	auto generator = stream_process(co_await this_coro::executor, make_runnable(process, {}).value());
+awaitable<void> do_monitor(Manager& manager, const Monitor& monitor, const Process& process)
+try {
+	auto generator = stream_process(co_await this_coro::executor, process);
 	while (generator.is_open()) {
+			const auto start     = std::chrono::high_resolution_clock::now();
 		auto result = co_await generator.async_resume(use_awaitable);
+			std::println("getting took: {}", std::chrono::high_resolution_clock::now() - start);
 		if (const auto ptr = std::get_if<int>(&result); ptr != nullptr) {
 			std::println("Input finished with status {}", *ptr);
 			break;
@@ -26,25 +28,23 @@ awaitable<void> do_monitor(const Monitor& monitor, const Process& process)
 				continue;
 			}
 
-			for (const auto& action : monitor.actions) {
-				auto runnable = make_runnable(std::get<Process>(action), *variables);
-				if (runnable.has_value()) {
-					co_await yoink::process(*runnable);
-				}
-			}
+			const auto time = determine_time(*variables);
+			manager.strike(ip::address_v4::from_string(variables->at("ip4")), time);
 		}
 	}
+} catch (const std::exception& e) {
+	std::println("do_monitor() failed: {}", e.what());
 }
 
 } // namespace
 
-awaitable<void> yoink::monitor(const Monitor& monitor)
+awaitable<void> yoink::monitor(Manager& manager, const Monitor& monitor)
 {
 	const auto executor = co_await this_coro::executor;
 
 	std::vector<decltype(co_spawn(executor, std::declval<awaitable<void>>(), deferred))> coroutines{};
 	for (const auto& input : monitor.inputs) {
-		coroutines.push_back(co_spawn(executor, do_monitor(monitor, std::get<Process>(input)), deferred));
+		coroutines.push_back(co_spawn(executor, do_monitor(manager, monitor, input), deferred));
 	}
 
 	const auto& [order, exceptions] = co_await experimental::make_parallel_group(std::move(coroutines))

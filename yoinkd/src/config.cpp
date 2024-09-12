@@ -20,33 +20,8 @@ try {
 		return value.as<Type>();
 	}
 	return node["<<"][key].as<Type>();
-} catch (...) {
-	std::throw_with_nested(std::runtime_error{ std::format("error on key: {}", key) });
-}
-
-void parse(const YAML::Node& node, Command& v, const Variables& variables)
-{
-	if (const auto type = get<std::string>(node, "type"); type == "process") {
-		auto& value   = v.emplace<Process>();
-		value.program = boost::process::search_path(get<std::string>(node, "program")).string();
-		for (auto& el : get<std::vector<std::string>>(node, "args")) {
-			if (el.starts_with("${") && el.ends_with("}")) {
-				el.pop_back();
-				el.erase(0, 2);
-
-				if (variables.contains(el)) {
-					value.args.push_back(VariableRef{ std::move(el) });
-				} else {
-					std::println("Variable ref '{}' does not exist; ignoring", el);
-					value.args.push_back(std::format("${{{}}}", el));
-				}
-			} else {
-				value.args.push_back(std::move(el));
-			}
-		}
-	} else {
-		throw std::runtime_error{ std::format("unsupported type '{}'", type) };
-	}
+} catch (const std::exception& e) {
+	throw std::runtime_error{ std::format("{}: {}", key, e.what()) };
 }
 
 } // namespace
@@ -85,81 +60,42 @@ struct convert<BanSettings> {
 	{
 		YOINK_YAML(ban_time);
 		YOINK_YAML(search_window);
-		YOINK_YAML(strike_count);
+		YOINK_YAML(strikes);
 		return true;
 	}
 };
 
-// template<>
-// struct convert<Process> {
-// 	static bool decode(const Node& node, Process& value)
-// 	{
-// 		value.program = boost::process::search_path(node["program"].as<std::string>()).string();
-// 		if (const auto& tmp = node["args"]; tmp.IsSequence()) {
-// 			value.args = tmp.as<std::vector<std::string>>();
-// 		} else if (tmp.IsDefined()) {
-// 			CLI::App generic_app{};
-// 			generic_app.add_option("x", value.args);
-// 			generic_app.parse("-- " + tmp.as<std::string>());
-// 		}
-// 		return true;
-// 	}
-// };
+template<>
+struct convert<Process> {
+	static bool decode(const Node& node, Process& value)
+	{
+		value.program = boost::process::search_path(node["program"].as<std::string>()).string();
+		if (const auto& tmp = node["args"]; tmp.IsSequence()) {
+			value.args = tmp.as<std::vector<std::string>>();
+		} else if (tmp.IsDefined()) {
+			CLI::App generic_app{};
+			generic_app.add_option("x", value.args);
+			generic_app.parse("-- " + tmp.as<std::string>());
+		}
+		return true;
+	}
+};
 
 bool convert<Config>::decode(const Node& node, yoink::Config& value)
 {
-	const auto variables = get<Variables>(node, "variables");
+	YOINK_YAML(ban_settings);
 
 	for (const auto& el : node["monitors"]) {
-		Monitor monitor{
-			.name         = get<std::string>(el, "name"),
-			.ban_settings = get<BanSettings>(el, "ban_settings"),
-		};
+		Monitor monitor{ .name = el.first.as<std::string>() };
+		monitor.inputs = get<decltype(monitor.inputs)>(el.second, "inputs");
 
-		for (const auto& pattern : el["patterns"]) {
-			monitor.patterns.push_back(Pattern{ variables, pattern.as<std::string>() });
+		for (const auto& in : el.second["patterns"]) {
+			monitor.patterns.push_back(Pattern{ in.as<std::string>() });
 		}
-		for (const auto& command : el["inputs"]) {
-			parse(command, monitor.inputs.emplace_back(), {});
-		}
-		for (const auto& action_el : el["actions"]) {
-			Action action{};
-			parse(action_el["add"], action.add, variables);
-			parse(action_el["remove"], action.remove, variables);
-			
-		}
+		value.monitors.push_back(std::move(monitor));
 	}
 
 	return true;
 }
 
 } // namespace YAML
-
-YAML::Node yoink::merge_defaults(const YAML::Node& node)
-{
-	switch (node.Type()) {
-	case YAML::NodeType::Undefined:
-	case YAML::NodeType::Null:
-	case YAML::NodeType::Scalar: return node;
-	case YAML::NodeType::Sequence: {
-		YAML::Node n{};
-		for (const auto& el : node) {
-			n.push_back(merge_defaults(el));
-		}
-		return n;
-	}
-	case YAML::NodeType::Map: {
-		YAML::Node n{};
-		if (const auto& v = node["<<"]; v.IsDefined()) {
-			n = v;
-		}
-		for (const auto& el : node) {
-			if (el.first.as<std::string>() != "<<") {
-				n[el.first] = merge_defaults(el.second);
-			}
-		}
-		return n;
-	}
-	}
-	throw std::logic_error{ "bad node type" };
-}

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <map>
 #include <optional>
 #include <pcre2.h>
@@ -14,7 +15,7 @@ using Variables = std::map<std::string, std::string>;
 class Pattern {
 public:
 	/// Compiles the pattern after replacing the given variables in the pattern.
-	Pattern(const Variables& variables, std::string pattern);
+	explicit Pattern(std::string pattern);
 	Pattern(const Pattern& copy) = delete;
 	Pattern(Pattern&& move) noexcept;
 	~Pattern();
@@ -30,5 +31,7 @@ public:
 private:
 	pcre2_code* _code = nullptr;
 };
+
+std::chrono::utc_clock::time_point determine_time(const Variables& variables);
 
 } // namespace yoink

@@ -1,3 +1,4 @@
+#include "command.hpp"
 #include "config.hpp"
 #include "monitor.hpp"
 
@@ -11,6 +12,7 @@
 #include <boost/scope_exit.hpp>
 #include <cerrno>
 #include <filesystem>
+#include <fstream>
 #include <pcre2.h>
 #include <print>
 #include <yaml-cpp/yaml.h>
@@ -26,7 +28,10 @@ int main(int argc, char** argv)
 	bool foreground = false;
 	app.add_flag("-f,--foreground", foreground)->envname("YOINK_FOREGROUND");
 
-	std::filesystem::path pid_file = "/var/run/yoink.pid";
+	bool flush = true;
+	app.add_flag("!--no-flush", flush)->envname("YOINK_NO_FLUSH");
+
+	std::filesystem::path pid_file = "/var/run/yoinkd.pid";
 	app.add_option("--pid-file", pid_file)->envname("YOINK_PID_FILE");
 
 	std::filesystem::path config_path{};
@@ -40,8 +45,8 @@ int main(int argc, char** argv)
 		return EXIT_FAILURE;
 	}
 
-	const auto config = yoink::merge_defaults(YAML::LoadFile(config_path)).as<yoink::Config>();
-	std::filesystem::current_path(config_path.parent_path());
+	const auto config = YAML::LoadFile(config_path).as<yoink::Config>();
+	std::filesystem::current_path(std::filesystem::canonical(config_path).parent_path());
 
 	if (!foreground) {
 		if (const auto pid = fork(); pid == -1) {
@@ -53,7 +58,7 @@ int main(int argc, char** argv)
 	}
 
 	if (pid_file != "") {
-		if (std::ifstream file{ pid_file }; file.is_open()) {
+		if (std::ifstream file{ pid_file, std::ios::in }; file.is_open()) {
 			pid_t pid = 0;
 			file >> pid;
 			if (kill(pid, 0) != -1 || errno != ESRCH) {
@@ -61,7 +66,7 @@ int main(int argc, char** argv)
 				return EXIT_FAILURE;
 			}
 		}
-		std::ofstream file{ pid_file };
+		std::ofstream file{ pid_file, std::ios::out };
 		file << getpid();
 	}
 	BOOST_SCOPE_EXIT_ALL(&)
@@ -73,8 +78,23 @@ int main(int argc, char** argv)
 
 	boost::asio::io_service service{};
 
+	if (flush) {
+		std::println("Flushing nft set");
+		boost::asio::co_spawn(
+		  service,
+		  [&] -> boost::asio::awaitable<void> {
+			  co_await yoink::process({
+			    .program = boost::process::search_path("nft").string(),
+			    .args    = { "flush", "set", "inet", "yoinkd", "blacklist4" },
+			  });
+		  }(),
+		  boost::asio::detached);
+	}
+
+	yoink::Manager manager{ service.get_executor(), config.ban_settings };
+
 	for (const auto& monitor : config.monitors) {
-		boost::asio::co_spawn(service, yoink::monitor(monitor), boost::asio::detached);
+		boost::asio::co_spawn(service, yoink::monitor(manager, monitor), boost::asio::detached);
 	}
 
 	while (true) {

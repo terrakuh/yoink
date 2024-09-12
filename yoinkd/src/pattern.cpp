@@ -1,5 +1,6 @@
 #include "pattern.hpp"
 
+#include <boost/lexical_cast.hpp>
 #include <boost/scope_exit.hpp>
 #include <regex>
 #include <stdexcept>
@@ -8,9 +9,16 @@ namespace yoink {
 
 namespace {
 
-void apply_variables(const Variables& variables, std::string& pattern)
+const std::map<std::string, std::string> variables = {
+	{ "${IP4}",
+	  R"((?<ip4>(\b25[0-5]|\b2[0-4][0-9]|\b[01]?[0-9][0-9]?)(\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)){3}))" },
+	{ "${ISO}",
+	  R"((?<years>[1-9][0-9]*)-(?<months>1[0-2]|0[1-9])-(?<days>3[01]|0[1-9]|[12][0-9])T(?<hours>2[0-3]|[01][0-9]):(?<minutes>[0-5][0-9]):(?<seconds>[0-5][0-9])(?:\.[0-9]+)?(?<timezone>Z|[+-](?:2[0-3]|[01][0-9]):[0-5][0-9])?)" },
+};
+
+void apply_variables(std::string& pattern)
 {
-	static std::regex regex{ R"(\$\{(\w+)\})", std::regex::optimize };
+	static std::regex regex{ R"(\$\{\w+\})", std::regex::optimize };
 
 	for (std::size_t pos = 0; true;) {
 		std::match_results<decltype(pattern.begin())> match{};
@@ -18,11 +26,9 @@ void apply_variables(const Variables& variables, std::string& pattern)
 			break;
 		}
 
-		const auto name = match[1].str();
-		if (const auto it = variables.find(name); it != variables.end()) {
-			const auto replacement = std::format("(?P<{}>{})", name, it->second);
-			pos                    = match[0].first - pattern.begin() + replacement.size();
-			pattern.replace(match[0].first, match[0].second, replacement);
+		if (const auto it = variables.find(match[0].str()); it != variables.end()) {
+			pos = match[0].first - pattern.begin() + it->second.size();
+			pattern.replace(match[0].first, match[0].second, it->second);
 		} else {
 			// Variable does not exist -> skip.
 			pos = match[0].second - pattern.begin();
@@ -32,9 +38,9 @@ void apply_variables(const Variables& variables, std::string& pattern)
 
 } // namespace
 
-Pattern::Pattern(const Variables& variables, std::string pattern)
+Pattern::Pattern(std::string pattern)
 {
-	apply_variables(variables, pattern);
+	apply_variables(pattern);
 
 	int error          = 0;
 	std::size_t offset = 0;
@@ -89,7 +95,7 @@ std::optional<std::map<std::string, std::string>> Pattern::match(std::string_vie
 			const std::size_t start = ovector[n * 2];
 			const std::size_t end   = ovector[n * 2 + 1];
 			if (start != PCRE2_UNSET && end != PCRE2_UNSET && start <= end && end <= data.size()) {
-				variables[reinterpret_cast<const char*>(table_ptr + 2)] = data.substr(start, end);
+				variables[reinterpret_cast<const char*>(table_ptr + 2)] = data.substr(start, end - start);
 			}
 		}
 		table_ptr += table_entry_size;
@@ -104,3 +110,23 @@ Pattern& Pattern::operator=(Pattern&& move) noexcept
 }
 
 } // namespace yoink
+
+std::chrono::utc_clock::time_point yoink::determine_time(const Variables& variables)
+{
+	using namespace std::chrono;
+
+	const auto date = year_month_day{ year{ boost::lexical_cast<int>(variables.at("years")) },
+		                                month{ boost::lexical_cast<unsigned int>(variables.at("months")) },
+		                                day{ boost::lexical_cast<unsigned int>(variables.at("days")) } };
+	const seconds time{ hours{ boost::lexical_cast<hours::rep>(variables.at("hours")) } +
+		                  minutes{ boost::lexical_cast<minutes::rep>(variables.at("minutes")) } +
+		                  seconds{ boost::lexical_cast<seconds::rep>(variables.at("seconds")) } };
+	minutes timezone{};
+	if (const auto it = variables.find("timezone"); it != variables.end() && it->second != "Z") {
+		const bool negative = it->second.at(0) == '-';
+		timezone            = hours{ boost::lexical_cast<hours::rep>(it->second.substr(1, 2)) } +
+		           minutes{ boost::lexical_cast<hours::rep>(it->second.substr(4, 2)) };
+	}
+
+	return utc_clock::from_sys(sys_days{ date } + time - timezone);
+}
